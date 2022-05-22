@@ -6,10 +6,33 @@ app.use(express.json());
 require('dotenv').config();
 const port = process.env.PORT || 5000;
 const { MongoClient, ServerApiVersion } = require('mongodb');
+var admin = require("firebase-admin");
 
+// doctors-portal-3461f-firebase-adminsdk-q7zcm-9c0acc9feb
+
+serviceAccount = require('./doctors-portal-3461f-firebase-adminsdk-q7zcm-9c0acc9feb.json');
+
+const adminConfig = JSON.parse(process.env.FIREBASE_CONFIG);
+adminConfig.credential = admin.credential.cert(serviceAccount);
+admin.initializeApp(adminConfig);
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.k8hkv.mongodb.net/myFirstDatabase?retryWrites=true&w=majority`;
 const client = new MongoClient(uri, { useNewUrlParser: true, useUnifiedTopology: true, serverApi: ServerApiVersion.v1 });
+
+async function verifyToken(req, res, next) {
+    if (req.headers.authorization?.startsWith('Bearer ')) {
+        const token = req.headers.authorization.split(' ')[1]
+
+        try {
+            const decodedUser = await admin.auth().verifyIdToken(token);
+            req.decodedEmail = decodedUser.email
+        }
+        catch {
+
+        }
+    }
+    next();
+}
 
 async function run() {
     try {
@@ -24,7 +47,7 @@ async function run() {
             const result = await appointmentDb.insertOne(appointment);
             res.json(result)
         })
-        app.get('/appointments', async (req, res) => {
+        app.get('/appointments', verifyToken, async (req, res) => {
             const email = req.query.email;
             const date = new Date(req.query.date).toLocaleDateString();
             console.log(date);
@@ -41,6 +64,17 @@ async function run() {
             console.log(result);
         })
 
+        app.get('/users/:email', async (req, res) => {
+            const email = req.params.email;
+            const query = { email: email }
+            const user = await usersDb.findOne(query)
+            let isAdmin = false;
+            if (user?.role === 'admin') {
+                isAdmin = true;
+            }
+            res.json({ admin: isAdmin })
+        })
+
         app.put('/users', async (req, res) => {
             const user = req.body;
             const filter = { email: user.email };
@@ -50,12 +84,21 @@ async function run() {
             res.json(result)
         })
 
-        app.put('/users/admin', async (req, res) => {
+        app.put('/users/admin', verifyToken, async (req, res) => {
             const user = req.body;
-            const filter = { email: user.email };
-            const updateDoc = { $set: { role: 'admin' } }
-            const result = await usersDb.updateOne(filter, updateDoc)
-            res.json(result)
+            const requester = req.decodedEmail
+            if (requester) {
+                const requesterAccount = await usersDb.findOne({ email: requester });
+                if (requesterAccount.role === 'admin') {
+                    const filter = { email: user.email };
+                    const updateDoc = { $set: { role: 'admin' } }
+                    const result = await usersDb.updateOne(filter, updateDoc)
+                    res.json(result)
+                }
+            }
+
+            res.status(403).json({ message: 'You dont have admin access' });
+
         })
 
     } finally {
